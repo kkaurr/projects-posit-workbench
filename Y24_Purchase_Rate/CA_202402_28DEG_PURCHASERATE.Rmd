@@ -1,0 +1,340 @@
+---
+title: "28DEGMC_PURCHASERATE_OFFERS"
+author: "Kuljeet"
+date: "22/02/2024"
+output: html_document
+---
+
+```{r, warning=FALSE,message=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(DBI)
+library(dplyr)
+library(dbplyr)
+library(odbc)
+library(DT)
+library(tidyverse)
+library(data.table)
+library(waterfalls)
+library(ggplot2)
+library(janitor)
+library(scales)
+library (sqldf)
+library(ggthemes)
+library(plyr)
+
+```
+
+```{r}
+readRenviron(".Renviron") 
+
+
+database <- "PD_CUSTOMER_ANALYTICS"
+myconn <- DBI::dbConnect(odbc::odbc(), "SNOWFLAKEC360", 
+                         database = "PD_CUSTOMER_ANALYTICS", 
+                         uid = if(Sys.getenv('SNOWFLAKE_UID') != "") Sys.getenv('SNOWFLAKE_UID') else NULL,
+                         token = if(Sys.getenv('SNOWFLAKE_C360_TOKEN') != "") Sys.getenv('SNOWFLAKE_C360_TOKEN') else NULL)
+
+```
+#### Waterfall report for 28DEGMC MARKETABLE BASE 
+
+```{sql connection=myconn, output.var = "TXN_DATE"}
+
+set (txn_startdate, txn_enddate) = (to_date('2023-01-01'), to_date('2023-12-31'));
+
+```
+
+```{sql connection=myconn, output.var = "DEGREES28_MKT_BASE"}
+
+SELECT 
+  X1.CUST_ACCT_APPL_ID
+  ,X1.CRM_PRODUCT
+  ,X1.CRM_ACCOUNT_ACTIVE_FLAG
+   ,X1.FIRST_NAME
+  ,X1.EMAILADDRESS
+  ,X3.STATUSCURR
+  ,X1.GENDER
+  ,X3.CRM_MOB
+  ,ROUND(X1.CREDITLIMIT_AMT) AS CREDITLIMIT
+  ,X1.CURR_BAL_AMT
+  ,X3.CRM_OTB_AMT
+  ,X2.MARKETABLE_CARDS_FLAG
+  ,X2.DNS_CLVLE_DIGITAL_FLAG 
+  ,X2.ACMA_OPTIN 
+  ,X2.SPAMHAUS_OPTIN 
+  ,CASE WHEN ((X1.CREDITLIMIT_AMT - X1.CURR_BAL_AMT <= 300)) THEN 1 ELSE 0 END AS OTB_LESSTHAN_300
+  ,CASE WHEN (X1.FIRST_NAME IS NULL or X1.EMAILADDRESS IS NULL) THEN 1 ELSE 0 END AS IF_MISSING_CONTACT
+  ,CASE WHEN X1.CRM_ACCOUNT_ACTIVE_FLAG <= 0 THEN 1 ELSE 0 END AS IF_ACCOUNT_ACTIVE_FLAG
+  ,CASE WHEN X2.MARKETABLE_CARDS_FLAG != 'Y' OR X2.DNS_CLVLE_DIGITAL_FLAG != 'I' THEN 1 ELSE 0 END AS IF_NOT_MARKETABLE_FLAG
+  ,CASE WHEN (X2.ACMA_OPTIN = 'I' AND X2.SPAMHAUS_OPTIN = 'I') then 1 else 0 end as IF_ACMA_SPAMHAUS_ELIG
+  ,CASE WHEN TXN.CUST_ACCT_APPL_ID IS NULL THEN 1 else 0 end as TRANSACTORS_FLAG
+  ,BECO.BECO_GRADE
+  FROM "PD_CUSTOMER_ANALYTICS"."CUSTOMER_ANALYTICS"."TBL_DM_ACCT_DETAILS" X1 
+INNER JOIN "PD_CUSTOMER_ANALYTICS"."CUSTOMER_ANALYTICS"."TBL_DM_ACCT_ELIGIBILITY" X2
+ON X1.CUST_ACCT_APPL_ID = X2.CUST_ACCT_APPL_ID 
+LEFT JOIN "PD_CUSTOMER_ANALYTICS"."CUSTOMER_ANALYTICS"."TBL_DM_ACCT_CARD" X3
+ON X1.CUST_ACCT_APPL_ID = X3.CUST_ACCT_APPL_ID 
+LEFT JOIN (
+select distinct cust_acct_appl_id
+,CRM_TRAN_TYPE
+,txn_amt
+,txn_cnt
+from
+(select cust_acct_appl_id
+,CRM_TRAN_TYPE
+,sum(crm_amt_net) as txn_amt 
+,sum(1) as txn_cnt
+from PD_CUSTOMER_ANALYTICS.CUSTOMER_ANALYTICS.TBL_DM_TXN_CARD
+where trandate between $txn_startdate and $txn_enddate
+and orgnbr = 330
+group by 1,2
+)
+where (CRM_TRAN_TYPE = 'SCH' and TXN_CNT >= 1) and not (CRM_TRAN_TYPE = 'INTEREST' and TXN_AMT >= 0)
+) TXN
+ON X1.CUST_ACCT_APPL_ID = TXN.CUST_ACCT_APPL_ID 
+LEFT JOIN "PD_CUSTOMER_ANALYTICS"."CUSTOMER_ANALYTICS"."VW_DM_ACCT_CARD_RISK" BECO
+ON X1.CUST_ACCT_APPL_ID = BECO.CUST_ACCT_APPL_ID
+WHERE X1.CRM_PRODUCT = '28DEGMC'
+AND X2.DNS_CLVLE_DIGITAL_FLAG = 'I' and X2.LFS_EMAIL_OPTOUT = 'I';
+
+        
+```
+
+```{r}
+
+# DEGREES28_MKT_BASE %>% dplyr::count(IF_ACMA_SPAMHAUS_ELIG,ACMA_OPTIN,SPAMHAUS_OPTIN)
+
+# DEGREES28_MKT_BASE %>% dplyr::count(IF_NOT_MARKETABLE_FLAG,MARKETABLE_CARDS_FLAG,DNS_CLVLE_DIGITAL_FLAG)
+
+```
+
+```{r}
+DEG28MC_waterfall <- DEGREES28_MKT_BASE %>% 
+  mutate(DROPOUT_FLAG = case_when(
+    (IF_NOT_MARKETABLE_FLAG == 0 & IF_MISSING_CONTACT == 0 & IF_ACCOUNT_ACTIVE_FLAG == 0 & TRANSACTORS_FLAG == 0) ~ 'Total Passed Wash',
+     IF_ACCOUNT_ACTIVE_FLAG == 1  ~ '1.ACCT-NOT-ACTIVE-EXCL',
+    (IF_ACCOUNT_ACTIVE_FLAG == 0 & IF_NOT_MARKETABLE_FLAG == 1) ~ '2.NON-MARKETABLE-AND-DNS-EXCL',
+    (IF_NOT_MARKETABLE_FLAG == 0 & IF_ACCOUNT_ACTIVE_FLAG == 0 & IF_MISSING_CONTACT == 1 ) ~ '3.MISSING-CONTACT-EXCL',
+    (IF_NOT_MARKETABLE_FLAG == 0 & IF_ACCOUNT_ACTIVE_FLAG == 0 & IF_MISSING_CONTACT == 0 & TRANSACTORS_FLAG == 1 ) ~ '4.NON-TRANSACTORS'
+  ))
+
+DEG28MC_waterfall %>% dplyr::count(DROPOUT_FLAG)
+
+DEG28_t <- DEG28MC_waterfall %>%  group_by(DROPOUT_FLAG) %>% dplyr::summarise(T_NUM = n())
+DEG28_t1 <- as.data.frame(DEG28_t)
+
+waterfall(DEG28_t, calc_total = TRUE, total_axis_text = "AU Cards-Total",total_rect_color = "goldenrod1", total_rect_text_color = "black" )+coord_flip()+
+  labs(title = "Waterfall Report for 28DEGMC ", 
+       subtitle = "Total MARKETABLE", 
+       x = "",
+       y = "")+theme_minimal()
+
+```
+
+
+
+## PREPARING SEGMENTS 
+
+```{r}
+
+PET_CA_FEB_28DEG_PURCHASERATE_1 <- sqldf(
+  "
+  SELECT CUST_ACCT_APPL_ID AS CUSTOMER_ID
+  ,CRM_PRODUCT
+  ,BECO_GRADE
+  ,'' AS CRM_PRODUCT_VARIANT
+  ,'' AS SUBSEG
+  ,'' AS THRESHOLD
+  ,'' AS OFFER
+  ,'CA_FEB_28DEG_PURCHASERATE' as CAMPAIGN_ID
+  ,	'2023-02-27' as  EXPIRY_DATE
+  , '2024-02-26' as CAMPAIGN_START_DATE
+  , '2023-03-25' as CAMPAIGN_END_DATE
+  ,case when row_number() over (partition by CRM_PRODUCT order by random()) <=
+                  0.5 * count(*) over (partition by CRM_PRODUCT) 
+             then 'IR'
+             else 'IF'
+             end as DEFINE_SEG 
+  ,'' as OFFER_ACTIVATED_FLAG
+  ,''AS SPEND_QUALIFIED_FLAG
+  FROM DEG28MC_waterfall
+  WHERE DROPOUT_FLAG = 'Total Passed Wash'
+  AND BECO_GRADE NOT IN ('CR4','CR5')
+  "
+)
+
+dim(PET_CA_FEB_28DEG_PURCHASERATE_1)
+
+
+#count(PET_CA_FEB_28DEG_PURCHASERATE_1$DEFINE_SEG)
+#count(PET_CA_FEB_28DEG_PURCHASERATE_1$BECO_GRADE)
+```
+
+## TOTAL ELIGIBLE SUMMARY 
+
+```{r}
+
+PET_CA_FEB_28DEG_PURCHASERATE_2 <- sqldf(
+  "
+  SELECT *
+  ,case when DEFINE_SEG = 'IF' AND row_number() over (partition by CRM_PRODUCT order by random()) <=
+                  0.5 * count(*) over (partition by CRM_PRODUCT) 
+             then 'IF3'
+             else 'IF6'
+             end as DEFINE_SEG2
+  FROM PET_CA_FEB_28DEG_PURCHASERATE_1
+  "
+)
+
+PET_CA_FEB_28DEG_PURCHASERATE_3 <- PET_CA_FEB_28DEG_PURCHASERATE_2 %>%
+  mutate( SEG = case_when(
+      DEFINE_SEG %in% 'IR' ~ 'IR',
+      DEFINE_SEG2 %in% 'IF3' ~ 'IF3',
+      DEFINE_SEG2 %in% 'IF6' ~ 'IF6')
+  )
+
+PET_CA_FEB_28DEG_PURCHASERATE <- sqldf(
+  "
+  SELECT CUSTOMER_ID
+  ,CRM_PRODUCT 
+  ,CRM_PRODUCT_VARIANT 
+  ,case when row_number() over (partition by SEG order by random()) <=
+                  0.1 * count(*) over (partition by SEG) 
+             then 'Y'
+             else 'N'
+             end as CONTROL_GROUP
+  ,SEG
+  ,BECO_GRADE AS SUBSEG
+  ,THRESHOLD
+  ,OFFER
+  ,CAMPAIGN_ID 
+  ,'EDM' AS CHANNEL
+  ,EXPIRY_DATE
+  ,CAMPAIGN_START_DATE
+  ,CAMPAIGN_END_DATE
+  ,OFFER_ACTIVATED_FLAG
+  FROM PET_CA_FEB_28DEG_PURCHASERATE_3
+  
+  "
+)
+
+count(PET_CA_FEB_28DEG_PURCHASERATE$CRM_PRODUCT)
+count(PET_CA_FEB_28DEG_PURCHASERATE$SEG)
+
+check_table_5 <- table(PET_CA_FEB_28DEG_PURCHASERATE$SUBSEG,PET_CA_FEB_28DEG_PURCHASERATE$SEG, PET_CA_FEB_28DEG_PURCHASERATE$CONTROL_GROUP )
+ftable(check_table_5)
+
+check_table_6 <- table(PET_CA_FEB_28DEG_PURCHASERATE$SEG, PET_CA_FEB_28DEG_PURCHASERATE$CONTROL_GROUP)
+ftable(check_table_6)
+
+## plots for the counts 
+
+PLOT1 <- PET_CA_FEB_28DEG_PURCHASERATE %>%
+          group_by(SEG,CONTROL_GROUP)%>%
+           dplyr::summarise(num = n(),
+                            NUM_LEADS = comma(n()))
+
+ggplot(PLOT1,aes(x= SEG,y = num , fill = CONTROL_GROUP))+
+            geom_bar(stat = "identity",position = "dodge")+
+         scale_fill_brewer(palette="Spectral")+
+          theme_bw()+
+  geom_text(aes(label = NUM_LEADS),size = 2.5,position=position_dodge(width=0.9), vjust=-0.25)+
+  labs(
+    x = "Segments",
+    y = "",
+    fill = "CONTROL_GROUP"
+        )
+
+PLOT2 <- PET_CA_FEB_28DEG_PURCHASERATE %>%
+            filter(CONTROL_GROUP == 'N') %>%
+          group_by(SEG,SUBSEG)%>%
+           dplyr::summarise(num = n(),
+                            NUM_LEADS = comma(n()))
+
+ggplot(PLOT2, aes(x=SEG, y= num,fill = SUBSEG))+
+  geom_bar(stat =  "identity")+
+     scale_fill_hue(c=45, l=80)+
+  geom_text(aes(label = NUM_LEADS),size = 2.5,position=position_dodge(width=0.9), vjust=-0.25)+
+          theme_bw()+
+   labs(
+    x = "Segments",
+    y = "",
+    fill = "Beco score"
+        )
+
+
+```
+
+## Append test seeds 
+
+```{r}
+
+SEED_1 <- PET_CA_FEB_28DEG_PURCHASERATE %>%
+  group_by(SEG, CONTROL_GROUP) %>%
+  slice(1) %>%
+  mutate(
+    OFFER_ACTIVATED_FLAG = case_when(
+      CONTROL_GROUP == 'Y' ~ 'N',
+      CONTROL_GROUP == 'N' ~ 'Y',
+    )
+  )%>%
+  ungroup()
+
+SEED_2 <- PET_CA_FEB_28DEG_PURCHASERATE %>%
+  group_by(SEG, CONTROL_GROUP) %>%
+  slice(1) %>%
+  mutate(
+    OFFER_ACTIVATED_FLAG = case_when(
+      CONTROL_GROUP == 'Y' ~ 'N',
+      CONTROL_GROUP == 'N' ~ 'N',
+    )
+  )%>%
+  ungroup()
+
+SEEDS_TEST_DATA <- bind_rows(SEED_1,SEED_2)
+
+check_table_6 <- table(SEEDS_TEST_DATA$CONTROL_GROUP, SEEDS_TEST_DATA$OFFER_ACTIVATED_FLAG)
+ftable(check_table_6)
+
+
+# str(SEEDS_TEST_DATA)
+
+
+PET_CA_FEB_SEEDS<- SEEDS_TEST_DATA %>% 
+   dplyr::mutate(CUSTOMER_ID = paste("TEST", CRM_PRODUCT,"C360",row_number(),sep = "_") )
+
+```
+
+#### CREATING THE PRODUCTION DATA 
+
+```{r}
+PET_CA_202402_28DEG_PURCHASERATE <- bind_rows(PET_CA_FEB_28DEG_PURCHASERATE,PET_CA_FEB_SEEDS)
+
+str(PET_CA_202402_28DEG_PURCHASERATE)
+
+PET_CA_202402_28DEG_PURCHASERATE %>% dplyr::count(CRM_PRODUCT)
+
+PET_CA_202402_28DEG_PURCHASERATE %>% dplyr::count(CRM_PRODUCT,CONTROL_GROUP)
+
+PET_CA_202402_28DEG_PURCHASERATE %>% dplyr::count(CRM_PRODUCT,CONTROL_GROUP,SEG)
+
+
+# checking duplicates
+
+PET_CA_202402_28DEG_PURCHASERATE %>% get_dupes(CUSTOMER_ID) %>% dplyr::summarize(n=n())
+
+
+```
+
+
+
+#### Transfering the PET back to snowflake
+
+
+```{r}
+
+table_id <- Id(database = Sys.getenv('CUSTOMER_ANALYTICS_WORKSPACE_DB'), schema = "CAMPAIGN_AUDIENCE", table = "PET_CA_202402_28DEG_PURCHASERATE")
+
+dbWriteTable(myconn, table_id,PET_CA_202402_28DEG_PURCHASERATE, overwrite = TRUE)
+
+```
+

@@ -1,0 +1,733 @@
+---
+title: "28DEGMC_TRAVEL_Q"
+author: "Kuljeet"
+date: "6/19/2023"
+output: html_document
+---
+
+```{r, warning=FALSE,message=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(DBI)
+library(dplyr)
+library(dbplyr)
+library(odbc)
+library(DT)
+library(tidyverse)
+library(data.table)
+library(waterfalls)
+library(ggplot2)
+library(janitor)
+library(scales)
+library (sqldf)
+library(ggthemes)
+library(plyr)
+
+```
+
+
+```{r}
+readRenviron(".Renviron") 
+
+
+database <- "PD_CUSTOMER_ANALYTICS"
+myconn <- DBI::dbConnect(odbc::odbc(), "SNOWFLAKEC360", 
+                         database = "PD_CUSTOMER_ANALYTICS", 
+                         uid = if(Sys.getenv('SNOWFLAKE_UID') != "") Sys.getenv('SNOWFLAKE_UID') else NULL,
+                         token = if(Sys.getenv('SNOWFLAKE_C360_TOKEN') != "") Sys.getenv('SNOWFLAKE_C360_TOKEN') else NULL)
+
+```
+
+#### Waterfall report for 28DEGMC MARKETABLE BASE 
+
+```{sql connection=myconn, output.var = "DEGREES28_MKT_BASE"}
+
+SELECT 
+  X1.CUST_ACCT_APPL_ID
+  ,X1.CRM_PRODUCT
+  ,X1.CRM_ACCOUNT_ACTIVE_FLAG
+   ,X1.FIRST_NAME
+  ,X1.EMAILADDRESS
+  ,X3.STATUSCURR
+  ,X1.GENDER
+  ,X3.CRM_MOB
+  ,ROUND(X1.CREDITLIMIT_AMT) AS CREDITLIMIT
+  ,X1.CURR_BAL_AMT
+  ,X3.CRM_OTB_AMT
+  ,X2.MARKETABLE_CARDS_FLAG
+  ,X2.DNS_CLVLE_DIGITAL_FLAG 
+  ,X2.ACMA_OPTIN 
+  ,X2.SPAMHAUS_OPTIN 
+  ,CASE WHEN ((X1.CREDITLIMIT_AMT - X1.CURR_BAL_AMT <= 300)) THEN 1 ELSE 0 END AS OTB_LESSTHAN_300
+  ,CASE WHEN (X1.FIRST_NAME IS NULL or X1.EMAILADDRESS IS NULL) THEN 1 ELSE 0 END AS IF_MISSING_CONTACT
+  ,CASE WHEN X1.CRM_ACCOUNT_ACTIVE_FLAG <= 0 THEN 1 ELSE 0 END AS IF_ACCOUNT_ACTIVE_FLAG
+  ,CASE WHEN X2.MARKETABLE_CARDS_FLAG != 'Y' OR X2.DNS_CLVLE_DIGITAL_FLAG != 'I' THEN 1 ELSE 0 END AS IF_NOT_MARKETABLE_FLAG
+  ,CASE WHEN (X2.ACMA_OPTIN = 'I' AND X2.SPAMHAUS_OPTIN = 'I') then 1 else 0 end as IF_ACMA_SPAMHAUS_ELIG
+  FROM 
+"PD_CUSTOMER_ANALYTICS"."CUSTOMER_ANALYTICS"."TBL_DM_ACCT_DETAILS" X1 
+INNER JOIN "PD_CUSTOMER_ANALYTICS"."CUSTOMER_ANALYTICS"."TBL_DM_ACCT_ELIGIBILITY" X2
+ON X1.CUST_ACCT_APPL_ID = X2.CUST_ACCT_APPL_ID 
+LEFT JOIN "PD_CUSTOMER_ANALYTICS"."CUSTOMER_ANALYTICS"."TBL_DM_ACCT_CARD" X3
+ON X1.CUST_ACCT_APPL_ID = X3.CUST_ACCT_APPL_ID 
+WHERE X1.CRM_PRODUCT = '28DEGMC';
+
+        
+```
+
+```{r}
+
+DEGREES28_MKT_BASE %>% dplyr::count(IF_ACMA_SPAMHAUS_ELIG,ACMA_OPTIN,SPAMHAUS_OPTIN)
+
+DEGREES28_MKT_BASE %>% dplyr::count(IF_NOT_MARKETABLE_FLAG,MARKETABLE_CARDS_FLAG,DNS_CLVLE_DIGITAL_FLAG)
+
+```
+
+
+
+```{r}
+DEG28MC_waterfall <- DEGREES28_MKT_BASE %>% 
+  mutate(DROPOUT_FLAG = case_when(
+    (IF_NOT_MARKETABLE_FLAG == 0 & IF_MISSING_CONTACT == 0 & IF_ACCOUNT_ACTIVE_FLAG == 0 & OTB_LESSTHAN_300 == 0) ~ 'Total Passed Wash',
+     IF_ACCOUNT_ACTIVE_FLAG == 1  ~ '1.ACCT-NOT-ACTIVE-EXCL',
+    (IF_ACCOUNT_ACTIVE_FLAG == 0 & IF_NOT_MARKETABLE_FLAG == 1) ~ '2.NON-MARKETABLE-AND-DNS-EXCL',
+    (IF_NOT_MARKETABLE_FLAG == 0 & IF_ACCOUNT_ACTIVE_FLAG == 0 & IF_MISSING_CONTACT == 1 ) ~ '3.MISSING-CONTACT-EXCL',
+    (IF_NOT_MARKETABLE_FLAG == 0 & IF_ACCOUNT_ACTIVE_FLAG == 0 & IF_MISSING_CONTACT == 0 & OTB_LESSTHAN_300 == 1 ) ~ '4.OTB-LESSTHAN-300-EXCL'
+  ))
+
+DEG28MC_waterfall %>% dplyr::count(DROPOUT_FLAG)
+
+DEG28_t <- DEG28MC_waterfall %>%  group_by(DROPOUT_FLAG) %>% dplyr::summarise(T_NUM = n())
+DEG28_t1 <- as.data.frame(DEG28_t)
+
+waterfall(DEG28_t, calc_total = TRUE, total_axis_text = "AU Cards-Total",total_rect_color = "goldenrod1", total_rect_text_color = "black" )+coord_flip()+
+  labs(title = "Waterfall Report for 28DEGMC ", 
+       subtitle = "Total MARKETABLE", 
+       x = "",
+       y = "")+theme_minimal()
+
+```
+
+#### 28DEGMC ACCOUNTS MARKETABLE BASE
+
+```{r}
+
+DEGREES28_MKT_BASE1 <-DEGREES28_MKT_BASE %>% 
+  filter(IF_NOT_MARKETABLE_FLAG == 0 & IF_MISSING_CONTACT == 0 & IF_ACCOUNT_ACTIVE_FLAG == 0 & OTB_LESSTHAN_300 == 0)
+
+count(DEGREES28_MKT_BASE1$CRM_PRODUCT)
+
+range(DEGREES28_MKT_BASE1$CRM_OTB_AMT)
+
+DEGREES28_MKT_BASE1 %>%  dplyr::count(IF_ACMA_SPAMHAUS_ELIG,ACMA_OPTIN,SPAMHAUS_OPTIN)
+
+
+
+# CHECKING IF ANY DUPLICATES 
+
+DEGREES28_MKT_BASE1 %>% get_dupes(CUST_ACCT_APPL_ID) %>% dplyr::summarize(n=n())
+
+
+```
+
+
+#### AVG INTERNATIONAL QUATERLY SPEND IN PAST YEAR 
+
+```{sql connection=myconn, output.var = "DEGMC28_X1_TXN_CUBE"}
+
+set (train_x1_startdate, train_x1_enddate) = (to_date('2022-04-01'), to_date('2023-03-30'));
+
+```
+
+
+```{sql connection=myconn, output.var = "DEGMC28_X1_TXN_AGGREGATION"}
+
+
+SELECT 
+CUST_ACCT_APPL_ID
+,OVERALL_L12M_AVG_TXN_AMT
+,I_L12M_AVG_TXN_AMT
+,ROUND((I_Q2_AVG_TXN_AMT+I_Q3_AVG_TXN_AMT+I_Q4_AVG_TXN_AMT+I_Q1_AVG_TXN_AMT)/4,2) AS INTL_AVG_Q_AMT
+FROM(
+SELECT 
+CUST_ACCT_APPL_ID
+// now overall 28 degrees as a card DOMESTIC + INTERANATIONAL 
+,SUM(TXN_AMT) AS OVERALL_TXN_AMT_L12M
+,SUM(TXN_CNT) AS OVERALL_TXN_CNT_L12M
+,COUNT(DISTINCT TRAN_YEAR_MTH) AS OVERALL_TXN_CNT_MNTH_L12M
+,round((case when OVERALL_TXN_AMT_L12M = 0 
+                  then 0 
+                  else OVERALL_TXN_AMT_L12M/OVERALL_TXN_CNT_MNTH_L12M end),2) AS OVERALL_L12M_AVG_TXN_AMT
+// International txns ONLY  
+// L12M 
+,SUM(case when CRM_INTL_FLAG = 'International' then TXN_AMT else 0 END ) AS I_TXN_AMT_L12M
+,SUM(case when CRM_INTL_FLAG = 'International' then TXN_CNT ELSE 0 END) AS I_TXN_CNT_L12M
+,COUNT(DISTINCT case when CRM_INTL_FLAG = 'International' THEN TRAN_YEAR_MTH  END) AS I_TXN_CNT_MNTH_L12M
+,round((case when I_TXN_AMT_L12M = 0 
+                  then 0 
+                  else I_TXN_AMT_L12M/I_TXN_CNT_MNTH_L12M end),2) AS I_L12M_AVG_TXN_AMT
+// FOR Q2 202204- 202206
+,SUM(CASE WHEN CRM_INTL_FLAG = 'International' AND Q2_FLAG = 1 THEN TXN_AMT ELSE 0 END) AS I_TXN_AMT_Q2
+,SUM(CASE WHEN CRM_INTL_FLAG = 'International' AND Q2_FLAG = 1 THEN TXN_CNT ELSE 0 END) AS I_TXN_CNT_Q2
+,COUNT(DISTINCT CASE WHEN CRM_INTL_FLAG = 'International' AND Q2_FLAG = 1 THEN TRAN_YEAR_MTH END ) AS I_TXN_CNT_MNTH_Q2
+,round((case when I_TXN_AMT_Q2 = 0 
+                  then 0 
+                  else I_TXN_AMT_Q2/I_TXN_CNT_MNTH_Q2 end),2) AS I_Q2_AVG_TXN_AMT
+// FOR Q3 202207-202209
+,SUM(CASE WHEN CRM_INTL_FLAG = 'International' AND Q3_FLAG = 1 THEN TXN_AMT ELSE 0 END) AS I_TXN_AMT_Q3
+,SUM(CASE WHEN CRM_INTL_FLAG = 'International' AND Q3_FLAG = 1 THEN TXN_CNT ELSE 0 END) AS I_TXN_CNT_Q3
+,COUNT(DISTINCT CASE WHEN CRM_INTL_FLAG = 'International' AND Q3_FLAG = 1 THEN TRAN_YEAR_MTH END ) AS I_TXN_CNT_MNTH_Q3
+,round((case when I_TXN_AMT_Q3 = 0 
+                  then 0 
+                  else I_TXN_AMT_Q3/I_TXN_CNT_MNTH_Q3 end),2) AS I_Q3_AVG_TXN_AMT
+// FOR Q4 202210- 202212
+,SUM(CASE WHEN CRM_INTL_FLAG = 'International' AND Q4_FLAG = 1 THEN TXN_AMT ELSE 0 END) AS I_TXN_AMT_Q4
+,SUM(CASE WHEN CRM_INTL_FLAG = 'International' AND Q4_FLAG = 1 THEN TXN_CNT ELSE 0 END) AS I_TXN_CNT_Q4
+,COUNT(DISTINCT CASE WHEN CRM_INTL_FLAG = 'International' AND Q4_FLAG = 1 THEN TRAN_YEAR_MTH  END ) AS I_TXN_CNT_MNTH_Q4
+,round((case when I_TXN_AMT_Q4 = 0 
+                  then 0 
+                  else I_TXN_AMT_Q4/I_TXN_CNT_MNTH_Q4 end),2) AS I_Q4_AVG_TXN_AMT
+// FOR Q1 202301- 202303
+,SUM(CASE WHEN CRM_INTL_FLAG = 'International' AND Q1_FLAG = 1 THEN TXN_AMT ELSE 0 END) AS I_TXN_AMT_Q1
+,SUM(CASE WHEN CRM_INTL_FLAG = 'International' AND Q1_FLAG = 1 THEN TXN_CNT ELSE 0 END) AS I_TXN_CNT_Q1
+,COUNT(DISTINCT CASE WHEN CRM_INTL_FLAG = 'International' AND Q1_FLAG = 1 THEN TRAN_YEAR_MTH  END ) AS I_TXN_CNT_MNTH_Q1
+,round((case when I_TXN_AMT_Q1 = 0 
+                  then 0 
+                  else I_TXN_AMT_Q1/I_TXN_CNT_MNTH_Q1 end),2) AS I_Q1_AVG_TXN_AMT
+from (
+SELECT CUST_ACCT_APPL_ID
+,CRM_TRAN_TYPE
+,TRAN_YEAR_MTH
+,CRM_INTL_FLAG
+,MCC_GROUP
+,IF_INTL_SPEND_ONLINE
+,IF_INTL_SPEND_OTHER
+,MOBILEWALLET_FLAG
+,STARTDATE
+,ENDDATE
+,CASE WHEN TRAN_YEAR_MTH between '202204' and '202206' THEN 1 ELSE 0 END AS Q2_FLAG
+,CASE WHEN TRAN_YEAR_MTH between '202207' and '202209' THEN 1 ELSE 0 END AS Q3_FLAG
+,CASE WHEN TRAN_YEAR_MTH between '202210' and '202212' THEN 1 ELSE 0 END AS Q4_FLAG
+,CASE WHEN TRAN_YEAR_MTH between '202301' and '202303' THEN 1 ELSE 0 END AS Q1_FLAG
+ -- measurement:
+		,sum(crm_amt_net) as TXN_AMT
+		,count(1) as TXN_CNT
+FROM ( select
+        CUST_ACCT_APPL_ID
+	    ,TRANDATE
+        -- dimension:
+        ,crm_tran_type
+		,TO_CHAR(TRANDATE,'YYYYMM') AS TRAN_YEAR_MTH
+        ,months_between($train_x1_enddate,TRANDATE) as MTHS_BTW_TXN_TODAY
+		,datediff('day',$train_x1_enddate, TRANDATE) as DAYS_BTW_TXN_TODAY
+		,ifnull(mcc_group,'UNKNOWN') as MCC_GROUP
+        ,ifnull(CRM_MERCHANT,crm_tran_type) as CRM_MERCHANT
+        ,case when CRM_INTL_FLAG =1 then 'International'
+              when CRM_INTL_FLAG =0 then 'Domestic'
+              else 'Unknown' end as CRM_INTL_FLAG
+        ,crm_pos_entry
+        ,case when crm_pos_entry = 'CARDNOTPRESENT_ONLINE' then 'Y' 
+              when crm_pos_entry is null then 'UNKNOWN'
+              else crm_pos_entry end as IF_ONLINE_SPEND
+        ,case when crm_pos_entry = 'CARDNOTPRESENT_ONLINE' and CRM_INTL_FLAG = 1 then 'Y'
+              when crm_pos_entry is null or CRM_INTL_FLAG is null then 'Unknown'
+              else 'N' end as IF_INTL_SPEND_ONLINE
+        ,CASE WHEN crm_pos_entry not in ('CARDNOTPRESENT_ONLINE') and CRM_INTL_FLAG = 1 then 'Y'
+            when crm_pos_entry is null or CRM_INTL_FLAG is null then 'Unknown'
+              else 'N' end as IF_INTL_SPEND_OTHER
+        ,case when CRM_MOBILEWALLET_TYPE is null then 0 else 1 end as MOBILEWALLET_FLAG
+        -- measurement:
+		,crm_amt_net 
+        //,case when (TRANDATE between $train_x_startdate and $train_x_enddate) then 'X' else 'Y' end as XY_TRANS_PERIOD
+        ,case when (TRANDATE between $train_x1_startdate and $train_x1_enddate) then '2022-04-01'  end as STARTDATE
+        ,case when (TRANDATE between $train_x1_startdate and $train_x1_enddate) then '2023-03-31' end as ENDDATE 
+        
+        //,row_number() over (partition by acct.cust_acct_appl_id, trans.crm_tran_type order by trans.TRANDATE desc) last_trans_by_type_cnt
+		from "PD_CUSTOMER_ANALYTICS"."CONFORMED"."TBL_VP2_TXN_TRN"
+		where crm_amt_net > 0 and crm_tran_type in ('SCH') and orgnbr = 330
+        and ((TRANDATE between $train_x1_startdate and $train_x1_enddate))
+)
+GROUP BY 1,2,3,4,5,6,7,8,9,10,11,12,13,14
+)
+GROUP BY 1
+)
+;
+
+```
+
+#### GET THE PREDICTION TABLE 
+
+```{sql connection=myconn, output.var = "DEGMC28_PREDICTION_X"}
+
+SELECT *
+FROM DATAIKU_AUTOMATION.CUSTOMER_ANALYTICS.NBO_28DEGMC_DEGMC28_PREDICTION
+
+
+```
+
+#### Join account table, txn table & predition table 
+
+```{r}
+
+T_28DEGMC_TABLE <- sqldf("select ACCT.CUST_ACCT_APPL_ID
+  ,ACCT.CRM_PRODUCT
+  ,ACCT.CRM_ACCOUNT_ACTIVE_FLAG
+  ,ACCT.CREDITLIMIT
+  ,ACCT.CRM_OTB_AMT
+  ,ACCT.MARKETABLE_CARDS_FLAG
+  ,ACCT.DNS_CLVLE_DIGITAL_FLAG 
+  ,ACCT.ACMA_OPTIN 
+  ,ACCT.SPAMHAUS_OPTIN 
+  ,ACCT.IF_ACMA_SPAMHAUS_ELIG
+  ,TXN.INTL_AVG_Q_AMT 
+  ,PRED.PREDICTION_MORE_500MORE
+  ,PRED.PREDICTION_MORE_500LESS
+  ,PRED.PREDICTION_LESS
+  ,PRED.PREDICTION_INACTIVE 
+  ,CASE WHEN TXN.INTL_AVG_Q_AMT >=2000 OR PRED.PROBA_1_MORE_500MORE >= 0.80 THEN '1.SCH_MORE_OVER_$500'
+        WHEN TXN.INTL_AVG_Q_AMT > 1001 AND TXN.INTL_AVG_Q_AMT < 2000 OR PRED.PROBA_1_MORE_500LESS >= 0.80 THEN '2.SCH_MORE_UNDER_$500'
+        WHEN TXN.INTL_AVG_Q_AMT > 0 AND TXN.INTL_AVG_Q_AMT < 1000  OR PRED.PROBA_1_LESS >= 0.70 THEN '3.SCH_LESS'
+        WHEN (TXN.INTL_AVG_Q_AMT IS null  OR TXN.INTL_AVG_Q_AMT = 0) OR PROBA_1_INACTIVE >= 0.70 THEN '4.SCH_INACTIVE'
+           END AS SUBSEG
+   from DEGREES28_MKT_BASE1 ACCT
+   LEFT JOIN DEGMC28_X1_TXN_AGGREGATION TXN
+   ON ACCT.CUST_ACCT_APPL_ID = TXN.CUST_ACCT_APPL_ID 
+   LEFT JOIN DEGMC28_PREDICTION_X PRED
+   ON ACCT.CUST_ACCT_APPL_ID = PRED.CUST_ACCT_APPL_ID 
+  ")
+
+```
+
+
+
+```{r}
+
+SUBSEG_CHECK_T <- T_28DEGMC_TABLE %>% 
+  select(INTL_AVG_Q_AMT, SUBSEG, PREDICTION_MORE_500MORE,PREDICTION_MORE_500LESS,PREDICTION_LESS,PREDICTION_INACTIVE)
+
+T_28DEGMC_TABLE %>% dplyr::count(SUBSEG)
+
+T_28DEGMC_TABLE %>% dplyr::count(CRM_PRODUCT)
+
+```
+
+
+#### TOTAL COUNT WITH CRM_OTB_AMT >= $1000 | COUNT OF SUBSEGMENTS 
+```{r}
+
+T_28DEGMC_TABLE %>% 
+  dplyr::count(CRM_PRODUCT)
+
+## CRM_OTB_AMT >= 1000
+T_28DEGMC_TABLE %>% 
+  filter (CRM_OTB_AMT < 1000) %>%
+  dplyr::count(CRM_PRODUCT)
+  
+## COUNT OF SUBSEG 
+
+
+T_28DEGMC_TABLE %>% 
+  dplyr::count(SUBSEG)
+
+```
+
+#### CALCULATING THE $ THRESHOLD AND THE OFFER AMOUNT 
+
+```{r}
+
+T_28DEGMC_TABLE <- T_28DEGMC_TABLE %>%
+  mutate(INTL_AVG_Q_AMT = if_else(is.na(INTL_AVG_Q_AMT),0,INTL_AVG_Q_AMT))
+
+```
+
+
+```{r}
+
+T_28DEGMC_TABLE_1 <- T_28DEGMC_TABLE %>%
+  filter (!is.na(SUBSEG)) %>%
+  mutate(SEG = "Scheme",
+         CRM_PRODUCT_VARIANT = "",
+         CUSTOMER_ID = CUST_ACCT_APPL_ID,
+         THRESHOLD_CHECK = case_when(
+           SUBSEG == "1.SCH_MORE_OVER_$500" ~ INTL_AVG_Q_AMT+2000,
+           SUBSEG == "2.SCH_MORE_UNDER_$500" ~ INTL_AVG_Q_AMT+1500,
+           SUBSEG == "3.SCH_LESS" ~ INTL_AVG_Q_AMT+1200,
+           SUBSEG == "4.SCH_INACTIVE" ~ 1000
+         ),
+          THRESHOLD = case_when(
+           SUBSEG == "1.SCH_MORE_OVER_$500" ~ (round(round_any(INTL_AVG_Q_AMT+2000,100,f=ceiling))),
+           SUBSEG == "2.SCH_MORE_UNDER_$500" ~ (round(round_any(INTL_AVG_Q_AMT+1500,100,f=ceiling))),
+           SUBSEG == "3.SCH_LESS" ~ (round(round_any(INTL_AVG_Q_AMT+1200,100,f=ceiling))) ,
+           SUBSEG == "4.SCH_INACTIVE" ~ (round(1000))
+         ),
+         OFFER = case_when(
+           SUBSEG == "1.SCH_MORE_OVER_$500" ~ "150",
+           SUBSEG == "2.SCH_MORE_UNDER_$500" ~ "100",
+           SUBSEG == "3.SCH_LESS" ~ "50",
+           SUBSEG == "4.SCH_INACTIVE" ~ "50"
+         )
+  )
+
+range(T_28DEGMC_TABLE_1$CRM_OTB_AMT)
+
+```
+
+#### 
+
+```{r}
+
+COUNT_OTB_CL_WASH <- T_28DEGMC_TABLE_1 %>% 
+  mutate( CREDITLIMIT_FLAG = case_when(
+        THRESHOLD > CREDITLIMIT ~ "threshold > Cl",
+        THRESHOLD > 6000 ~ "Spend threshold > 6000"
+  ))
+
+check_table <- table(COUNT_OTB_CL_WASH$SUBSEG, COUNT_OTB_CL_WASH$CREDITLIMIT_FLAG)
+ftable(check_table)
+
+
+T_28DEGMC_TABLE_2 <- T_28DEGMC_TABLE_1 %>%
+   mutate(THRESHOLD = case_when(
+        THRESHOLD <= 6000 ~ THRESHOLD, 
+        THRESHOLD > 6000 ~ 6000,
+        THRESHOLD > CREDITLIMIT ~ CREDITLIMIT,
+  ),
+        threshold_range = case_when (
+          THRESHOLD <= 1000 ~ "$1000",
+          THRESHOLD>1000 & THRESHOLD < 1200 ~ "$1001-$1199",
+          THRESHOLD>=1200 & THRESHOLD < 1500 ~ "$1200-$1499",
+          THRESHOLD>=1500 & THRESHOLD <= 1999 ~ "$1500-$2000",
+          THRESHOLD>=2000 & THRESHOLD <= 3000 ~ "$2001-$3000",
+          THRESHOLD>3000 & THRESHOLD <= 4000 ~ "$3001-$4000",
+          THRESHOLD>4000 & THRESHOLD <= 6000 ~ "$4001-$6000",
+          THRESHOLD > 6000 ~ "$6000+"
+        ))
+
+
+```
+
+
+```{r}
+##str(T_28DEGMC_TABLE_2)
+
+#CHECK THE RANGE OF THE SPEND THRESHOLD
+
+count(T_28DEGMC_TABLE_2$CRM_PRODUCT)
+
+# RANGE OF THE THRESHOLD 
+
+range(T_28DEGMC_TABLE_2$CRM_OTB_AMT)
+
+range(T_28DEGMC_TABLE_2$THRESHOLD)
+
+## FREQ TABLE FOR THE SPEND THRESHOLD RANGE 
+check_table_2 <- table(T_28DEGMC_TABLE_2$SUBSEG, T_28DEGMC_TABLE_2$threshold_range, T_28DEGMC_TABLE_2$OFFER)
+ftable(check_table_2)
+
+
+
+ggplot(T_28DEGMC_TABLE_2, aes(x=SUBSEG, fill = threshold_range))+
+  geom_bar(position = "fill")+
+  ylab("propotion")+coord_flip()+
+     scale_fill_hue(c=45, l=80)+
+          theme_bw()
+```
+
+
+#### FREQUENCIES OF TOTAL PASS WASH
+
+```{r}
+
+count(T_28DEGMC_TABLE_2$SUBSEG)
+count(T_28DEGMC_TABLE_2$CRM_PRODUCT)
+
+# MARKETABLE FLAG IS 'Y' & DNS_CLVLE_DIGITAL_FLAG IS 'I'
+
+check_table_3 <- table(T_28DEGMC_TABLE_2$MARKETABLE_CARDS_FLAG, T_28DEGMC_TABLE_2$DNS_CLVLE_DIGITAL_FLAG)
+ftable(check_table_3)
+
+# 
+
+check_table_4 <- table(T_28DEGMC_TABLE_2$SUBSEG, T_28DEGMC_TABLE_2$IF_ACMA_SPAMHAUS_ELIG)
+ftable(check_table_4)
+
+X <- table(T_28DEGMC_TABLE_2$IF_ACMA_SPAMHAUS_ELIG,T_28DEGMC_TABLE_2$ACMA_OPTIN,T_28DEGMC_TABLE_2$SPAMHAUS_OPTIN)
+ftable(X)
+##view(check_table_4)
+
+PLOTy <- T_28DEGMC_TABLE_2 %>%
+          group_by(ACMA_OPTIN, SPAMHAUS_OPTIN)%>%
+           dplyr::summarise(num = n(),
+                            NUM_LEADS = comma(n()))
+
+
+ggplot(PLOTy, aes(x=ACMA_OPTIN, y= num,fill = SPAMHAUS_OPTIN))+
+  geom_bar(stat =  "identity")+
+     scale_fill_hue(c=45, l=80)+
+  geom_text(aes(label = NUM_LEADS),size = 2.5,position=position_dodge(width=0.9), vjust=-0.25)+
+          theme_bw()
+```
+
+#### BUILDING THE CAMPAIGN DATA CONTROL GROUP AND OFFER_ACTIVATED_FLAG & SPEND_QUALIFIED_FLAG 
+
+```{r}
+
+PET_CA_857_TRAVEL_Q <- sqldf(
+  "
+  SELECT CUSTOMER_ID
+  ,CRM_PRODUCT
+  ,CRM_PRODUCT_VARIANT
+  ,SEG
+  ,SUBSEG
+  ,THRESHOLD
+  ,OFFER
+  ,'SG_CA_857_28DEGMC_TRAVELQ' as CAMPAIGN_ID
+  ,	'2023-07-05' as  EXPIRY_DATE
+  , '2023-07-04' as CAMPAIGN_START_DATE
+  , '2023-09-30' as CAMPAIGN_END_DATE
+  ,case when row_number() over (partition by SUBSEG order by random()) <=
+                  0.4 * count(*) over (partition by SUBSEG) 
+             then 'Y'
+             else 'N'
+             end as CONTROL_GROUP 
+  ,'' as OFFER_ACTIVATED_FLAG
+  ,''AS SPEND_QUALIFIED_FLAG
+  FROM T_28DEGMC_TABLE_2
+  "
+)
+
+dim(T_28DEGMC_TABLE_2)
+
+dim(PET_CA_857_TRAVEL_Q)
+
+```
+
+#### CHECK CONTROL_GROUP & SUBSEGS 
+
+```{r}
+
+
+check_table_5 <- table(PET_CA_857_TRAVEL_Q$SUBSEG, PET_CA_857_TRAVEL_Q$CONTROL_GROUP)
+ftable(check_table_5)
+
+count(PET_CA_857_TRAVEL_Q$SUBSEG)
+count(PET_CA_857_TRAVEL_Q$CRM_PRODUCT)
+
+
+check_table_6 <- table(PET_CA_857_TRAVEL_Q$OFFER_ACTIVATED_FLAG, PET_CA_857_TRAVEL_Q$SPEND_QUALIFIED_FLAG)
+ftable(check_table_6)
+
+## plots for the counts 
+
+PLOTx <- PET_CA_857_TRAVEL_Q %>%
+          group_by(CONTROL_GROUP)%>%
+           dplyr::summarise(num = n(),
+                            NUM_LEADS = comma(n()))
+
+ggplot(PLOTx,aes(x= CONTROL_GROUP,y = num , fill = CONTROL_GROUP))+
+            geom_bar(stat = "identity",position = "dodge")+
+        scale_fill_brewer(palette="Spectral")+
+          theme_bw()+
+  geom_text(aes(label = NUM_LEADS),size = 2.5,position=position_dodge(width=0.9), vjust=-0.25)+
+  labs(
+    x = "Segments",
+    y = "",
+    fill = "CONTROL_GROUP"
+        )
+
+
+PLOT1 <- PET_CA_857_TRAVEL_Q %>%
+          group_by(SUBSEG,CONTROL_GROUP)%>%
+           dplyr::summarise(num = n(),
+                            NUM_LEADS = comma(n()))
+
+ggplot(PLOT1,aes(x= SUBSEG,y = num , fill = CONTROL_GROUP))+
+            geom_bar(stat = "identity",position = "dodge")+
+         scale_fill_brewer(palette="Spectral")+
+          theme_bw()+coord_flip()+
+  geom_text(aes(label = NUM_LEADS),size = 2.5,position=position_dodge(width=0.9), vjust=-0.25)+
+  labs(
+    x = "Segments",
+    y = "",
+    fill = "CONTROL_GROUP"
+        )
+
+PLOT2 <- PET_CA_857_TRAVEL_Q %>%
+            filter(CONTROL_GROUP == 'N') %>%
+          group_by(SUBSEG,OFFER)%>%
+           dplyr::summarise(num = n(),
+                            NUM_LEADS = comma(n()))
+
+ggplot(PLOT2,aes(x= SUBSEG,y = num , fill = OFFER))+
+            geom_bar(stat = "identity",position = "dodge")+
+         scale_fill_brewer(palette="Spectral")+
+          theme_bw()+coord_flip()+
+  geom_text(aes(label = NUM_LEADS),size = 2.5,position=position_dodge(width=0.9), vjust=-0.25)+
+  labs(
+    x = "Segments",
+    y = "",
+    fill = "OFFER"
+        )
+
+
+```
+
+#### TEST SEEDS TO GENERATE FOR OFFER_ACTIVATED_FLAG & SPEND_QUALIFIED_FLAG
+
+```{r}
+
+SEED_1 <- PET_CA_857_TRAVEL_Q %>%
+  arrange(desc(THRESHOLD)) %>%
+  group_by(SUBSEG, CONTROL_GROUP) %>%
+  slice(1) %>%
+  mutate(
+    OFFER_ACTIVATED_FLAG = case_when(
+      CONTROL_GROUP == 'Y' ~ 'N',
+      CONTROL_GROUP == 'N' ~ 'Y',
+  
+    ),
+    SPEND_QUALIFIED_FLAG = case_when(
+      CONTROL_GROUP == 'Y' ~ 'N',
+      CONTROL_GROUP == 'N' ~ 'N',
+    )
+  )%>%
+  ungroup()
+
+shuffled_data= PET_CA_857_TRAVEL_Q[sample(1:nrow(PET_CA_857_TRAVEL_Q)), ]
+
+SEED_2 <- shuffled_data %>%
+  filter(CONTROL_GROUP == 'N') %>%
+  group_by(SUBSEG) %>%
+  slice(2) %>%
+  mutate(
+    OFFER_ACTIVATED_FLAG = case_when(
+      CONTROL_GROUP == 'N' ~ 'Y',
+    ),
+    SPEND_QUALIFIED_FLAG = case_when(
+      CONTROL_GROUP == 'N' ~ 'Y',
+    )
+  )%>%
+  ungroup()
+
+shuffled_data1 = PET_CA_857_TRAVEL_Q[sample(1:nrow(PET_CA_857_TRAVEL_Q)), ]
+
+
+SEED_3 <- shuffled_data1 %>%
+  filter(CONTROL_GROUP == 'N') %>%
+  group_by(SUBSEG) %>%
+  slice(1) %>%
+  mutate(
+    OFFER_ACTIVATED_FLAG = case_when(
+      CONTROL_GROUP == 'N' ~ 'N',
+    ),
+    SPEND_QUALIFIED_FLAG = case_when(
+      CONTROL_GROUP == 'N' ~ 'Y',
+    )
+  )%>%
+  ungroup()
+
+shuffled_data2 = PET_CA_857_TRAVEL_Q[sample(1:nrow(PET_CA_857_TRAVEL_Q)), ]
+
+SEED_4 <- shuffled_data2 %>%
+  filter(CONTROL_GROUP == 'N') %>%
+  group_by(SUBSEG) %>%
+  slice(1) %>%
+  mutate(
+    OFFER_ACTIVATED_FLAG = case_when(
+      CONTROL_GROUP == 'N' ~ 'N',
+    ),
+    SPEND_QUALIFIED_FLAG = case_when(
+      CONTROL_GROUP == 'N' ~ 'N',
+    )
+  )%>%
+  ungroup()
+
+SEEDS_TEST_DATA <- bind_rows(SEED_1,SEED_2,SEED_3,SEED_4)
+
+
+## TABLE 6
+
+check_table_6 <- table(SEEDS_TEST_DATA$CONTROL_GROUP, SEEDS_TEST_DATA$OFFER_ACTIVATED_FLAG,
+                       SEEDS_TEST_DATA$SPEND_QUALIFIED_FLAG)
+ftable(check_table_6)
+
+
+str(SEEDS_TEST_DATA)
+
+```
+
+
+
+```{r}
+
+## for seeds 
+
+PET_CA_857_SEEDS<- SEEDS_TEST_DATA %>% 
+   dplyr::mutate(CUSTOMER_ID = paste("TEST", CRM_PRODUCT,"C360",row_number(),sep = "_") )
+  
+
+```
+
+#### CREATING THE PRODUCTION DATA 
+
+```{r}
+PET_SG_CA857_28DEGMC_TRAVEL_Q <- bind_rows(PET_CA_857_TRAVEL_Q,PET_CA_857_SEEDS)
+
+str(PET_SG_CA857_28DEGMC_TRAVEL_Q)
+
+PET_SG_CA857_28DEGMC_TRAVEL_Q %>% dplyr::count(CRM_PRODUCT)
+
+PET_SG_CA857_28DEGMC_TRAVEL_Q %>% dplyr::count(CRM_PRODUCT,CONTROL_GROUP)
+
+PET_SG_CA857_28DEGMC_TRAVEL_Q %>% dplyr::count(CRM_PRODUCT,CONTROL_GROUP,SUBSEG)
+
+range(PET_SG_CA857_28DEGMC_TRAVEL_Q$THRESHOLD)
+# checking duplicates
+
+PET_SG_CA857_28DEGMC_TRAVEL_Q %>% get_dupes(CUSTOMER_ID) %>% dplyr::summarize(n=n())
+
+
+```
+
+#### Expected final treatment group after SPAMHAUS FILTERS 
+
+```{r}
+
+  
+SPAMHAUS_CHECK <- sqldf("
+SELECT A.* 
+,X.ACMA_OPTIN
+,X.SPAMHAUS_OPTIN
+,X.IF_ACMA_SPAMHAUS_ELIG
+FROM PET_SG_CA857_28DEGMC_TRAVEL_Q A 
+LEFT JOIN T_28DEGMC_TABLE_2 X
+ON A.CUSTOMER_ID = X.CUSTOMER_ID
+WHERE A.CONTROL_GROUP = 'N'
+                        ")
+
+
+PLOT_SPAMHAUS <- SPAMHAUS_CHECK %>%
+          group_by(ACMA_OPTIN, SPAMHAUS_OPTIN)%>%
+           dplyr::summarise(num = n(),
+                            NUM_LEADS = comma(n()))
+
+
+ggplot(PLOT_SPAMHAUS, aes(x=ACMA_OPTIN, y= num,fill = SPAMHAUS_OPTIN))+
+  geom_bar(stat =  "identity")+
+     scale_fill_hue(c=45, l=80)+
+  geom_text(aes(label = NUM_LEADS),size = 3,position=position_dodge(width=0.9), vjust=-0.25)+
+          theme_bw()
+```
+
+
+
+
+
+#### Transfering the PET back to snowflake
+
+
+```{r}
+
+table_id <- Id(database = Sys.getenv('CUSTOMER_ANALYTICS_WORKSPACE_DB'), schema = "CAMPAIGN_AUDIENCE", table = "PET_SG_CA857_28DEGMC_TRAVEL_Q")
+
+dbWriteTable(myconn, table_id,PET_SG_CA857_28DEGMC_TRAVEL_Q, overwrite = TRUE)
+
+```
